@@ -15,6 +15,7 @@ import { getPlatformServices } from '@/common/platform';
 import { ipcBridge } from '@/common';
 import { electronNotification } from '@/common/electronSafe';
 import { ProcessConfig } from '@process/utils/initStorage';
+import { getDetachedWindowRegistry } from '@process/services/detachedWindowRegistry';
 import type { BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -34,6 +35,7 @@ const appWindows = new Set<BrowserWindow>();
  * suppresses notifications, the same way the main window's always has.
  */
 export const registerNotificationAppWindow = (win: BrowserWindow): void => {
+  if (appWindows.has(win)) return;
   appWindows.add(win);
   win.once('closed', () => appWindows.delete(win));
 };
@@ -64,6 +66,47 @@ const isAnyAppWindowFocused = (): boolean => {
   return false;
 };
 
+const getLiveMainWindow = (): BrowserWindow | null =>
+  mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+
+const getNotificationProducer = (): BrowserWindow | null =>
+  getLiveMainWindow() ?? [...appWindows].find((win) => !win.isDestroyed()) ?? null;
+
+const revealNotificationWindow = (win: BrowserWindow): void => {
+  if (win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+};
+
+const focusDetachedConversation = (conversationId: string | undefined): boolean => {
+  if (!conversationId) return false;
+  try {
+    return getDetachedWindowRegistry().focusConversation(conversationId);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Open the notification's own conversation. This branch is only reached with no
+ * live main window, so every remaining app window is a detached window pinned to
+ * a different conversation: revealing one would answer a click about
+ * conversation A by raising conversation B. A failure is therefore reported and
+ * nothing is revealed, rather than silently surfacing the wrong conversation.
+ */
+const openDetachedConversation = (conversationId: string): void => {
+  try {
+    void getDetachedWindowRegistry()
+      .openConversation(conversationId)
+      .catch((error) => {
+        console.error('[Notification] Failed to open notification conversation:', error);
+      });
+  } catch (error) {
+    console.error('[Notification] Failed to open notification conversation:', error);
+  }
+};
+
 /**
  * Get app icon path for notifications
  */
@@ -88,8 +131,9 @@ const getNotificationIcon = (): string | undefined => {
  *
  * Skips when `system.notificationEnabled` is off, or when the main window is
  * already focused (no nagging). When a real Electron notification is available,
- * clicking it focuses the main window and emits `notification.clicked` so the
- * renderer can navigate to the originating conversation.
+ * clicking it first focuses an existing detached owner. Otherwise it asks the
+ * main window to navigate, or opens the exact detached conversation when no
+ * main window exists.
  *
  * In non-Electron mode this falls back to the platform service, which is a no-op.
  */
@@ -97,16 +141,26 @@ export async function showNotification({
   title,
   body,
   conversation_id,
+  source_web_contents_id,
 }: {
   title: string;
   body: string;
   conversation_id?: string;
+  source_web_contents_id?: number | null;
 }): Promise<void> {
   // Check if notification is enabled
   const notificationEnabled = await ProcessConfig.get('system.notificationEnabled');
   if (notificationEnabled === false) {
     console.log('[Notification] Skipped: notifications are disabled in settings');
     return;
+  }
+
+  if (source_web_contents_id !== undefined) {
+    const producer = getNotificationProducer();
+    if (source_web_contents_id === null || producer?.webContents.id !== source_web_contents_id) {
+      console.log('[Notification] Skipped: another app window owns notification production');
+      return;
+    }
   }
 
   // Do not notify while the user is already looking at the app.
@@ -122,13 +176,19 @@ export async function showNotification({
     try {
       const notification = new electronNotification({ title, body, ...(iconPath ? { icon: iconPath } : {}) });
       notification.on('click', () => {
-        const win = mainWindowRef;
-        if (win && !win.isDestroyed()) {
-          if (win.isMinimized()) win.restore();
-          win.show();
-          win.focus();
+        if (focusDetachedConversation(conversation_id)) return;
+        const win = getLiveMainWindow();
+        if (win) {
+          revealNotificationWindow(win);
+          ipcBridge.notification.clicked.emit({ conversation_id });
+          return;
         }
-        ipcBridge.notification.clicked.emit({ conversation_id });
+        if (conversation_id) {
+          openDetachedConversation(conversation_id);
+          return;
+        }
+        const producer = getNotificationProducer();
+        if (producer) revealNotificationWindow(producer);
       });
       notification.show();
       console.log(`[Notification] show() called (isSupported=${electronNotification.isSupported()})`);

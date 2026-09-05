@@ -8,7 +8,7 @@ import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { Checkbox, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
-import { EditOne, Export, FolderClose, Inbox, MoreOne, Pushpin, Timer } from '@icon-park/react';
+import { EditOne, Export, FolderClose, Inbox, MoreOne, Newlybuild, Pushpin, Timer } from '@icon-park/react';
 import ForkBranchIcon from '@renderer/components/base/ForkBranchIcon';
 import classNames from 'classnames';
 import React from 'react';
@@ -43,6 +43,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     onMenuVisibleChange,
     onEditStart,
     onCreateCronTask,
+    onOpenDetached,
     onArchive,
     onExport,
     onTogglePin,
@@ -225,6 +226,10 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
                       onCreateCronTask(conversation);
                       return;
                     }
+                    if (key === 'openDetached') {
+                      onOpenDetached?.(conversation);
+                      return;
+                    }
                     if (key === 'export') {
                       onExport?.(conversation);
                       return;
@@ -258,6 +263,12 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
                     <div className='flex items-center gap-8px'>
                       <Timer theme='outline' size='14' />
                       <span>{t('conversation.history.createCronTask')}</span>
+                    </div>
+                  </Menu.Item>
+                  <Menu.Item key='openDetached'>
+                    <div className='flex items-center gap-8px'>
+                      <Newlybuild theme='outline' size='14' />
+                      <span>{t('conversation.history.openInNewWindow')}</span>
                     </div>
                   </Menu.Item>
                   {onExport && (
