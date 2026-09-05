@@ -96,6 +96,7 @@
   },
   "splitGroup": {
     "tooltip": "نمای تقسیم‌شده: {{names}}",
+    "blockLabel": "تقسیم · {{count}}",
     "open": "باز کردن نمای تقسیم‌شده",
     "focusMember": "نمایش «{{name}}» در نمای تقسیم‌شده",
     "removeMember": "حذف «{{name}}» از نمای تقسیم‌شده",

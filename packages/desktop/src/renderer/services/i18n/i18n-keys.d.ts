@@ -828,6 +828,7 @@ export type I18nKey =
   | 'conversation.skill_generator.type_skill'
   | 'conversation.skills.loaded'
   | 'conversation.skills.slashHint'
+  | 'conversation.splitGroup.blockLabel'
   | 'conversation.splitGroup.dragToSplit'
   | 'conversation.splitGroup.dropToAdd'
   | 'conversation.splitGroup.dropToSplit'
