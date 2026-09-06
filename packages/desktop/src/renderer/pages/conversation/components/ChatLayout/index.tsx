@@ -2,6 +2,7 @@ import { AgentLogoIcon } from '@/renderer/components/agent/AgentBadge';
 import type { PresetAssistantInfo } from '@/renderer/hooks/agent/usePresetAssistantInfo';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
+import { ColumnHeaderActivator } from './ColumnHeaderActivator';
 import { useChatColumn } from '@/renderer/pages/conversation/hooks/chatColumnContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
@@ -72,7 +73,7 @@ const ChatLayout: React.FC<{
   const isMobile = Boolean(layout?.isMobile);
   // A split column: the header is a band of its own, the title keeps its room
   // and the actions (model picker first) give way as the column narrows.
-  const { compactHeader, columnFocused = false } = useChatColumn();
+  const { compactHeader, columnFocused = false, headerDragHandle } = useChatColumn();
 
   // Preview panel state
   const { isOpen: isPreviewOpenRaw, isMaximized } = usePreviewContext();
@@ -247,9 +248,9 @@ const ChatLayout: React.FC<{
         // room (the picker fills up to its full label, the buttons hug the
         // right edge). Short of room, the picker gives way first, down to its
         // icon, and only then does the title truncate.
-        <div className='h-full min-w-0 flex items-center' style={{ flex: '0 1 auto' }} data-testid='chat-header-title'>
-          {titleEditor}
-        </div>
+        // In a split, the title area is also what you grab to reorder the
+        // columns; see ColumnHeaderActivator.
+        <ColumnHeaderActivator handle={headerDragHandle}>{titleEditor}</ColumnHeaderActivator>
       ) : (
         <FlexFullContainer className='h-full min-w-0' containerClassName='flex items-center'>
           {titleEditor}

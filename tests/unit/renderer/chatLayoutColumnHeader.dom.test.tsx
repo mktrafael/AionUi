@@ -12,7 +12,7 @@
  */
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -59,12 +59,17 @@ vi.mock('@/renderer/pages/conversation/hooks/useWorkspaceCollapse', () => ({
 
 import ChatLayout from '@/renderer/pages/conversation/components/ChatLayout';
 import { ChatColumnProvider } from '@/renderer/pages/conversation/hooks/chatColumnContext';
+import type { ChatColumnContextValue } from '@/renderer/pages/conversation/hooks/chatColumnContext';
 
 const TITLE = 'Refactor the billing reconciliation job to run nightly';
 
-const renderHeader = (compact: boolean, columnFocused = false) =>
+const renderHeader = (
+  compact: boolean,
+  columnFocused = false,
+  headerDragHandle?: ChatColumnContextValue['headerDragHandle']
+) =>
   render(
-    <ChatColumnProvider value={{ composerActive: true, compactHeader: compact, columnFocused }}>
+    <ChatColumnProvider value={{ composerActive: true, compactHeader: compact, columnFocused, headerDragHandle }}>
       <ChatLayout
         title={TITLE}
         sider={<div>sider</div>}
@@ -144,5 +149,81 @@ describe('ChatLayout header inside a split column', () => {
     expect(actions.className).toContain('shrink-0');
     expect(actions.style.flex).toBe('');
     expect(document.querySelector('[data-column-header="true"]')).toBeNull();
+  });
+});
+
+/**
+ * In a split, the title area is what you grab to reorder the columns: it takes
+ * the drag activator, a grip glyph rides beside the title, and the header's own
+ * controls stay where they were.
+ */
+describe('ChatLayout header as the column drag handle', () => {
+  const handle = (isDragging = false) => ({
+    onPointerDown: vi.fn(),
+    onClickCapture: vi.fn(),
+    isDragging,
+    label: 'conversation.splitGroup.reorderHandle',
+    onKeyDown: vi.fn(),
+  });
+
+  it('puts the activator on the title area and a labelled grip beside the title', () => {
+    const h = handle();
+    renderHeader(true, false, h);
+    const title = screen.getByTestId('chat-header-title');
+    expect(title.className).toContain('cursor-grab');
+    expect(title.className).toContain('select-none');
+    expect(title.style.touchAction).toBe('manipulation');
+    fireEvent.pointerDown(title);
+    expect(h.onPointerDown).toHaveBeenCalledTimes(1);
+    fireEvent.click(title);
+    expect(h.onClickCapture).toHaveBeenCalledTimes(1);
+    const grip = screen.getByTestId('chat-header-grip');
+    expect(grip.tagName).toBe('BUTTON');
+    expect(grip).toHaveAttribute('aria-label', 'conversation.splitGroup.reorderHandle');
+    expect(title.contains(grip)).toBe(true);
+    // The actions are untouched: the picker is still in its own slot.
+    expect(screen.getByTestId('chat-header-actions').textContent).toContain('a wide model picker label');
+  });
+
+  it('washes the dragged header lightly, with no outline', () => {
+    renderHeader(true, false, handle(true));
+    const title = screen.getByTestId('chat-header-title');
+    expect(title.getAttribute('data-column-dragging')).toBe('true');
+    expect(title.className).toContain('cursor-grabbing');
+    expect(title.className).not.toMatch(/border|shadow/);
+  });
+
+  it('marks the minimap trigger inside the activator as its own press, and nothing else', () => {
+    const h = handle();
+    renderHeader(true, false, h);
+    const title = screen.getByTestId('chat-header-title');
+    const trigger = title.querySelector('.conversation-minimap-trigger');
+    expect(trigger).not.toBeNull();
+    expect(trigger).toHaveAttribute('role', 'button');
+    expect(trigger).toHaveAttribute('data-column-drag', 'ignore');
+    // The activator still hears the press; the view is what reads the mark off the target.
+    fireEvent.pointerDown(trigger as Element);
+    expect(h.onPointerDown).toHaveBeenCalledTimes(1);
+    expect(h.onPointerDown.mock.calls[0][0].target).toBe(trigger);
+    // The title and the grip are the drag: unmarked.
+    expect(screen.getByTestId('chat-title-editor-trigger')).not.toHaveAttribute('data-column-drag');
+    expect(screen.getByTestId('chat-header-grip')).not.toHaveAttribute('data-column-drag');
+  });
+
+  it('hands Alt+Arrow on the grip to the handle', () => {
+    const h = handle();
+    renderHeader(true, false, h);
+    fireEvent.keyDown(screen.getByTestId('chat-header-grip'), { key: 'ArrowRight', altKey: true });
+    expect(h.onKeyDown).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives a conversation on its own no grip and no activator', () => {
+    renderHeader(false);
+    expect(screen.queryByTestId('chat-header-grip')).toBeNull();
+  });
+
+  it('leaves a column without a handle selectable', () => {
+    renderHeader(true, false);
+    expect(screen.getByTestId('chat-header-title').className).not.toContain('select-none');
   });
 });

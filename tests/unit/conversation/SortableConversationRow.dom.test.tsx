@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { DndContext } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -110,6 +110,65 @@ describe('SortableConversationRow', () => {
     // And the next plain click is the row's again.
     fireEvent.click(view.getByTestId('conversation-drag-handle-conv-1'));
     expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not eat the next click after a drop that ended somewhere else', async () => {
+    // A drop elsewhere produces no click on the handle, so nothing would ever
+    // reset the latch; it clears once the drag-end task is over.
+    const onClick = vi.fn();
+    const handle = (isDragging: boolean) => (
+      <div onClick={onClick}>
+        <DragHandle
+          conversation_id='conv-1'
+          label='drag'
+          isDragging={isDragging}
+          setActivatorNodeRef={setNoRef}
+          attributes={{} as never}
+          listeners={{}}
+        />
+      </div>
+    );
+    const view = render(handle(false));
+    view.rerender(handle(true));
+    view.rerender(handle(false));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fireEvent.click(view.getByTestId('conversation-drag-handle-conv-1'));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the latch exactly for the drag-end click window: the same task, and no longer', () => {
+    vi.useFakeTimers();
+    try {
+      const onClick = vi.fn();
+      const handle = (isDragging: boolean) => (
+        <div onClick={onClick}>
+          <DragHandle
+            conversation_id='conv-1'
+            label='drag'
+            isDragging={isDragging}
+            setActivatorNodeRef={setNoRef}
+            attributes={{} as never}
+            listeners={{}}
+          />
+        </div>
+      );
+      const view = render(handle(false));
+      view.rerender(handle(true));
+      view.rerender(handle(false));
+      // Still inside the task the drag ended in: the click is the drag's.
+      fireEvent.click(view.getByTestId('conversation-drag-handle-conv-1'));
+      expect(onClick).not.toHaveBeenCalled();
+      // A second drop elsewhere: the task runs out, and the next click is the row's.
+      view.rerender(handle(true));
+      view.rerender(handle(false));
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+      fireEvent.click(view.getByTestId('conversation-drag-handle-conv-1'));
+      expect(onClick).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('opens the conversation from a plain click on the drag handle, which lies over the icon', () => {

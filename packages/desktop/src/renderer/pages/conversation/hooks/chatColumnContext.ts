@@ -4,7 +4,35 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type React from 'react';
 import { createContext, useContext } from 'react';
+
+/**
+ * What a column's header needs to be the thing you grab to reorder columns:
+ * the pointer-down that may become a drag (the view decides, after a small
+ * move or a hold), the click that must not follow a drag, whether this column
+ * is the one being dragged (its header shows a light wash), the accessible
+ * name of the grip, and the keyboard alternative (Alt+Arrow on the grip moves
+ * the column one slot).
+ */
+export type ColumnHeaderDragHandle = {
+  onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+  onClickCapture: (event: React.MouseEvent<HTMLElement>) => void;
+  isDragging: boolean;
+  label: string;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLElement>) => void;
+};
+
+/**
+ * Spread onto an interactive descendant of the header's title area whose
+ * press is its own — the minimap's search trigger — so a pointer-down there
+ * never becomes a column drag and the click that ends it still fires. Text
+ * fields need no mark: a press inside one is always the field's. The title
+ * and the grip are not marked: they are the drag.
+ */
+export const COLUMN_DRAG_IGNORE_PROPS = { 'data-column-drag': 'ignore' } as const;
+/** Matches an element carrying `COLUMN_DRAG_IGNORE_PROPS`, for the view's own check. */
+export const COLUMN_DRAG_IGNORE_SELECTOR = '[data-column-drag="ignore"]';
 
 export type ChatColumnContextValue = {
   /**
@@ -30,6 +58,8 @@ export type ChatColumnContextValue = {
    * a heavy ring, which reads as a black box drawn over the chat.
    */
   columnFocused?: boolean;
+  /** Present in a split column: the header's title area is the drag activator that reorders columns. */
+  headerDragHandle?: ColumnHeaderDragHandle;
 };
 
 const ChatColumnContext = createContext<ChatColumnContextValue>({ composerActive: true, compactHeader: false });

@@ -10,6 +10,7 @@ import ChatConversation from '@/renderer/pages/conversation/components/ChatConve
 import { useSplitGroupMutations } from '@/renderer/pages/conversation/GroupedHistory/hooks/useSplitGroupMutations';
 import type { SplitGroup } from '@/renderer/pages/conversation/GroupedHistory/utils/splitGroupHelpers';
 import { ChatColumnProvider } from '@/renderer/pages/conversation/hooks/chatColumnContext';
+import type { ColumnHeaderDragHandle } from '@/renderer/pages/conversation/hooks/chatColumnContext';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { Button, Empty, Spin, Tooltip } from '@arco-design/web-react';
 import { CloseSmall } from '@icon-park/react';
@@ -19,6 +20,7 @@ import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import ConversationDropZone from './ConversationDropZone';
+import { SplitColumnPlaceholderHeader } from './SplitColumnPlaceholderHeader';
 
 /**
  * One member of an open split group: a full, live conversation view with a ×
@@ -30,7 +32,9 @@ export const SplitGroupColumn: React.FC<{
   group: SplitGroup;
   member: TChatConversation;
   focused: boolean;
-}> = ({ group, member, focused }) => {
+  /** The header's title area is what you grab to reorder the columns. */
+  headerDragHandle?: ColumnHeaderDragHandle;
+}> = ({ group, member, focused, headerDragHandle }) => {
   const { t } = useTranslation();
   const { removeMember } = useSplitGroupMutations();
   const name = member.name || t('conversation.welcome.newConversation');
@@ -95,8 +99,8 @@ export const SplitGroupColumn: React.FC<{
   // Only the focused column's composer takes the keyboard focus (on mount and
   // on each change of focus); see ChatColumnContext.
   const chatColumn = useMemo(
-    () => ({ composerActive: focused, compactHeader: true, columnFocused: focused }),
-    [focused]
+    () => ({ composerActive: focused, compactHeader: true, columnFocused: focused, headerDragHandle }),
+    [focused, headerDragHandle]
   );
 
   const removeButton = (
@@ -121,16 +125,21 @@ export const SplitGroupColumn: React.FC<{
         data-focused={focused ? 'true' : 'false'}
       >
         {isLoading ? (
-          <Spin loading className='flex-1' />
+          <>
+            <SplitColumnPlaceholderHeader name={name} headerDragHandle={headerDragHandle} actions={removeButton} />
+            <Spin loading className='flex-1' />
+          </>
         ) : conversation ? (
           <ChatColumnProvider value={chatColumn}>
             <ChatConversation conversation={conversation} previewHosted headerActions={removeButton} />
           </ChatColumnProvider>
         ) : (
-          <div className='flex flex-col items-center justify-center gap-12px flex-1'>
-            <Empty description={t('conversation.splitGroup.memberUnavailable', { name })} />
-            {removeButton}
-          </div>
+          <>
+            <SplitColumnPlaceholderHeader name={name} headerDragHandle={headerDragHandle} actions={removeButton} />
+            <div className='flex flex-col items-center justify-center gap-12px flex-1'>
+              <Empty description={t('conversation.splitGroup.memberUnavailable', { name })} />
+            </div>
+          </>
         )}
         {/* The focused column is outlined by a hairline in the border token,
             painted above the chat and never in the way of it. The wash that
