@@ -7,11 +7,14 @@
 /**
  * What a dropped sidebar conversation does, decided from where it landed.
  *
- * Two gestures share one drag: dropping a row *between* pinned rows reorders
+ * Three gestures share one drag: dropping a row *between* pinned rows reorders
  * them (the behaviour that existed before split groups), dropping it *onto*
- * something fuses. The pointer's vertical position inside the target row tells
- * the two apart; the drop target's kind tells what "fuse" means. Pure so the
- * decision table is testable without a DndContext.
+ * something fuses, and dropping a row that is already a split-group member
+ * anywhere else takes it out of its group. The pointer's vertical position
+ * inside the target row tells the first two apart; the drop target's kind
+ * tells what "fuse" means; whether the dragged row is already a member decides
+ * between fusing and leaving. Pure so the decision table is testable without a
+ * DndContext.
  */
 
 import type { SplitGroup } from './splitGroupHelpers';
@@ -23,20 +26,29 @@ export type DropIntent = 'onto' | 'before' | 'after';
 const BETWEEN_BAND = 0.25;
 
 /**
- * Where inside a row the pointer let go. Only rows that can actually be
- * reordered have "between" bands; anywhere on any other row is "onto".
+ * Where the pointer let go, relative to the target it resolved to.
+ *
+ * A release in the *gap* beside a target — collision detection picked the
+ * nearest row-like target because the pointer was over none — is "between"
+ * no matter what the target is or whether anything can be reordered: that is
+ * what a gap means. A release *inside* a row is "onto", except that rows which
+ * can actually be reordered have "between" bands at their top and bottom.
  */
 export const resolveDropIntent = ({
   pointerY,
   targetTop,
   targetHeight,
   canReorder,
+  inGap = false,
 }: {
   pointerY: number;
   targetTop: number;
   targetHeight: number;
   canReorder: boolean;
+  /** The target was chosen for the pointer sitting in the gap beside it. */
+  inGap?: boolean;
 }): DropIntent => {
+  if (inGap) return pointerY < targetTop + targetHeight / 2 ? 'before' : 'after';
   if (!canReorder || targetHeight <= 0) return 'onto';
   const offset = (pointerY - targetTop) / targetHeight;
   if (offset < BETWEEN_BAND) return 'before';
@@ -52,30 +64,85 @@ export type ConversationDropTarget =
 /** Payload the dragged row carries. */
 export type ConversationDragSource = { kind: 'conversation'; conversation_id: string };
 
+/** Where a member being moved out of its group lands. */
+export type SplitGroupMoveTarget =
+  | { kind: 'group'; group_id: string }
+  /** A plain conversation: the two of them become a new group. */
+  | { kind: 'conversation'; conversation_id: string };
+
 export type ConversationDropAction =
   | { type: 'reorder-pinned'; active_id: string; over_id: string }
   | { type: 'create-group'; target_id: string; dragged_id: string }
   | { type: 'add-member'; group_id: string; dragged_id: string }
-  | { type: 'none'; reason: 'self' | 'between' | 'already-member' | 'dragged-grouped' | 'unknown-group' };
+  /** A member let go somewhere that is not a fuse target: it leaves its group. */
+  | { type: 'remove-member'; group_id: string; dragged_id: string }
+  /** A member let go on another group or another row: it leaves and joins in one batch. */
+  | { type: 'move-member'; from_group_id: string; dragged_id: string; to: SplitGroupMoveTarget }
+  | { type: 'none'; reason: 'self' | 'between' | 'nowhere' | 'already-member' | 'unknown-group' };
 
 export const resolveConversationDropAction = ({
   dragged_id,
   target,
   intent,
+  inGap = false,
   groups,
   pinnedIds,
 }: {
   dragged_id: string;
-  target: ConversationDropTarget;
+  /** `null` when the pointer was over nothing a drop could mean anything on. */
+  target: ConversationDropTarget | null;
   intent: DropIntent;
+  /**
+   * The target was picked for the pointer being in the gap *beside* it, not
+   * over it. A "between" band inside a reorderable row is a different thing:
+   * it still counts as landing on that row for anything that is not a reorder.
+   */
+  inGap?: boolean;
   groups: SplitGroup[];
   pinnedIds: readonly string[];
 }): ConversationDropAction => {
-  // A row that is already a column somewhere is never a drag source in the UI
-  // (its row is folded into a pill), so this is a guard, not a feature.
-  if (findSplitGroupOf(groups, dragged_id)) return { type: 'none', reason: 'dragged-grouped' };
+  const sourceGroup = findSplitGroupOf(groups, dragged_id);
+
+  // A member of a group is the one row whose drag can *undo* something:
+  // anywhere that is not a fuse target means "take me out of here", and a
+  // fuse target means "take me out of here and put me there".
+  if (sourceGroup) {
+    const leave = (to: SplitGroupMoveTarget): ConversationDropAction => ({
+      type: 'move-member',
+      from_group_id: sourceGroup.id,
+      dragged_id,
+      to,
+    });
+    if (!target) return { type: 'remove-member', group_id: sourceGroup.id, dragged_id };
+    // Beside anything — a plain row, a block, a row inside one — is not a fuse
+    // either, whatever it is beside and whether or not anything there can be
+    // reordered: the member still leaves. So is a "between" band on any row.
+    // Only a release *onto* a target moves it.
+    if (inGap || (target.kind === 'conversation' && intent !== 'onto')) {
+      return { type: 'remove-member', group_id: sourceGroup.id, dragged_id };
+    }
+    if (target.kind === 'split_group') {
+      if (target.group_id === sourceGroup.id) return { type: 'none', reason: 'self' };
+      const group = groups.find((candidate) => candidate.id === target.group_id);
+      if (!group) return { type: 'none', reason: 'unknown-group' };
+      return leave({ kind: 'group', group_id: group.id });
+    }
+    if (target.conversation_id === dragged_id) return { type: 'none', reason: 'self' };
+    const targetGroup = findSplitGroupOf(groups, target.conversation_id);
+    if (targetGroup) {
+      return targetGroup.id === sourceGroup.id
+        ? { type: 'none', reason: 'self' }
+        : leave({ kind: 'group', group_id: targetGroup.id });
+    }
+    return leave({ kind: 'conversation', conversation_id: target.conversation_id });
+  }
+
+  // A plain row released over nothing keeps the old behaviour: nothing happens.
+  if (!target) return { type: 'none', reason: 'nowhere' };
 
   if (target.kind === 'split_group') {
+    // Beside a block is not a drop on it.
+    if (inGap) return { type: 'none', reason: 'between' };
     const group = groups.find((candidate) => candidate.id === target.group_id);
     if (!group) return { type: 'none', reason: 'unknown-group' };
     if (group.members.some((member) => member.id === dragged_id)) return { type: 'none', reason: 'already-member' };
@@ -86,7 +153,10 @@ export const resolveConversationDropAction = ({
   if (target_id === dragged_id) return { type: 'none', reason: 'self' };
 
   const targetGroup = findSplitGroupOf(groups, target_id);
-  if (targetGroup) return { type: 'add-member', group_id: targetGroup.id, dragged_id };
+  if (targetGroup) {
+    // Beside a row inside a block is not a drop on it; a band inside the row is.
+    return inGap ? { type: 'none', reason: 'between' } : { type: 'add-member', group_id: targetGroup.id, dragged_id };
+  }
 
   if (intent === 'onto') return { type: 'create-group', target_id, dragged_id };
 
@@ -95,6 +165,15 @@ export const resolveConversationDropAction = ({
   }
   return { type: 'none', reason: 'between' };
 };
+
+/**
+ * Whether the target under the pointer should light up for this action. Only
+ * an action that would *use* the target does — a fuse, a join, a reorder. A
+ * member leaving its group uses nothing; lighting the row or block it happens
+ * to be beside would say "drop here" while the ghost says "take it out".
+ */
+export const dropActionHighlightsTarget = (action: ConversationDropAction): boolean =>
+  action.type !== 'remove-member' && action.type !== 'none';
 
 /** Droppable ids, unique across the one DndContext that spans sidebar and chat area. */
 export const splitGroupDropId = (group_id: string): string => `split-group:${group_id}`;

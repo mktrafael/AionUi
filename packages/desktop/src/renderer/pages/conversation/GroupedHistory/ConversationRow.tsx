@@ -8,15 +8,147 @@ import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { Checkbox, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
-import { EditOne, Export, FolderClose, Inbox, MoreOne, Newlybuild, Pushpin, Timer } from '@icon-park/react';
+import { CloseSmall, EditOne, Export, FolderClose, Inbox, MoreOne, Newlybuild, Pushpin, Timer } from '@icon-park/react';
 import ForkBranchIcon from '@renderer/components/base/ForkBranchIcon';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ConversationLeadingIcon from './ConversationLeadingIcon';
+import type { TChatConversation } from '@/common/config/storage';
 import type { ConversationRowProps } from './types';
 import { isConversationPinned } from './utils/groupingHelpers';
+
+/**
+ * The actions a conversation row offers, in the order they are offered. Shared
+ * with the rows inside a split-group block, which reach it by right-click and
+ * get one extra item — leaving the group — that a plain row has no use for, and
+ * lose one — opening in a new window, which a member already rendered in a
+ * split column must not do (see SplitGroupRow).
+ */
+export const ConversationRowMenu: React.FC<
+  Pick<
+    ConversationRowProps,
+    | 'conversation'
+    | 'isManualUnread'
+    | 'onTogglePin'
+    | 'onToggleManualUnread'
+    | 'onEditStart'
+    | 'onCreateCronTask'
+    | 'onOpenDetached'
+    | 'onArchive'
+    | 'onExport'
+  > & {
+    /** Only supplied for a row that is a member of a split group. */
+    onRemoveFromSplit?: (conversation: TChatConversation) => void;
+  }
+> = ({
+  conversation,
+  isManualUnread,
+  onTogglePin,
+  onToggleManualUnread,
+  onEditStart,
+  onCreateCronTask,
+  onOpenDetached,
+  onArchive,
+  onExport,
+  onRemoveFromSplit,
+}) => {
+  const { t } = useTranslation();
+  const isPinned = isConversationPinned(conversation);
+  return (
+    <Menu
+      onClickMenuItem={(key) => {
+        if (key === 'pin') {
+          onTogglePin(conversation);
+          return;
+        }
+        if (key === 'toggleManualUnread') {
+          onToggleManualUnread(conversation);
+          return;
+        }
+        if (key === 'rename') {
+          onEditStart(conversation);
+          return;
+        }
+        if (key === 'createCronTask') {
+          onCreateCronTask(conversation);
+          return;
+        }
+        if (key === 'openDetached') {
+          onOpenDetached?.(conversation);
+          return;
+        }
+        if (key === 'removeFromSplit') {
+          onRemoveFromSplit?.(conversation);
+          return;
+        }
+        if (key === 'export') {
+          onExport?.(conversation);
+          return;
+        }
+        if (key === 'archive') {
+          onArchive(conversation);
+        }
+      }}
+    >
+      <Menu.Item key='pin'>
+        <div className='flex items-center gap-8px'>
+          <Pushpin theme='outline' size='14' />
+          <span>{isPinned ? t('conversation.history.unpin') : t('conversation.history.pin')}</span>
+        </div>
+      </Menu.Item>
+      <Menu.Item key='toggleManualUnread'>
+        <div className='flex items-center gap-8px'>
+          <Inbox theme='outline' size='14' />
+          <span>{isManualUnread ? t('conversation.history.markAsRead') : t('conversation.history.markAsUnread')}</span>
+        </div>
+      </Menu.Item>
+      <Menu.Item key='rename'>
+        <div className='flex items-center gap-8px'>
+          <EditOne theme='outline' size='14' />
+          <span>{t('conversation.history.rename')}</span>
+        </div>
+      </Menu.Item>
+      <Menu.Item key='createCronTask'>
+        <div className='flex items-center gap-8px'>
+          <Timer theme='outline' size='14' />
+          <span>{t('conversation.history.createCronTask')}</span>
+        </div>
+      </Menu.Item>
+      {onOpenDetached && (
+        <Menu.Item key='openDetached'>
+          <div className='flex items-center gap-8px'>
+            <Newlybuild theme='outline' size='14' />
+            <span>{t('conversation.history.openInNewWindow')}</span>
+          </div>
+        </Menu.Item>
+      )}
+      {onRemoveFromSplit && (
+        <Menu.Item key='removeFromSplit'>
+          <div className='flex items-center gap-8px'>
+            <CloseSmall theme='outline' size='14' />
+            <span>{t('conversation.splitGroup.removeFromSplit')}</span>
+          </div>
+        </Menu.Item>
+      )}
+      {onExport && (
+        <Menu.Item key='export'>
+          <div className='flex items-center gap-8px'>
+            <Export theme='outline' size='14' />
+            <span>{t('conversation.history.export')}</span>
+          </div>
+        </Menu.Item>
+      )}
+      <Menu.Item key='archive'>
+        <div className='flex items-center gap-8px'>
+          <FolderClose theme='outline' size='14' />
+          <span>{t('conversation.history.archive')}</span>
+        </div>
+      </Menu.Item>
+    </Menu>
+  );
+};
 
 const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const {
@@ -74,7 +206,11 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   // spinner keeps the resting slot and the handle keeps the hover slot; the
   // badge below carries the "still working" signal while the handle is up, so
   // the two never contend for the same place.
-  const showLeadingOverlay = !batchMode && !isMobile;
+  //
+  // Whether the row is a drag source at all is the list's decision (it asks the
+  // pointer, not the viewport); a narrow window still gets the overlay, so a
+  // handle it was handed is never left with nowhere to show.
+  const showLeadingOverlay = !batchMode;
   const leadingOverlay = dragHandle ?? (isPinned ? <Pushpin theme='outline' size='14' /> : null);
   const leadingFade = showLeadingOverlay && leadingOverlay ? 'group-hover:opacity-0 transition-opacity' : undefined;
 
@@ -230,86 +366,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             }}
           >
             <Dropdown
-              droplist={
-                <Menu
-                  onClickMenuItem={(key) => {
-                    if (key === 'pin') {
-                      onTogglePin(conversation);
-                      return;
-                    }
-                    if (key === 'toggleManualUnread') {
-                      onToggleManualUnread(conversation);
-                      return;
-                    }
-                    if (key === 'rename') {
-                      onEditStart(conversation);
-                      return;
-                    }
-                    if (key === 'createCronTask') {
-                      onCreateCronTask(conversation);
-                      return;
-                    }
-                    if (key === 'openDetached') {
-                      onOpenDetached?.(conversation);
-                      return;
-                    }
-                    if (key === 'export') {
-                      onExport?.(conversation);
-                      return;
-                    }
-                    if (key === 'archive') {
-                      onArchive(conversation);
-                    }
-                  }}
-                >
-                  <Menu.Item key='pin'>
-                    <div className='flex items-center gap-8px'>
-                      <Pushpin theme='outline' size='14' />
-                      <span>{isPinned ? t('conversation.history.unpin') : t('conversation.history.pin')}</span>
-                    </div>
-                  </Menu.Item>
-                  <Menu.Item key='toggleManualUnread'>
-                    <div className='flex items-center gap-8px'>
-                      <Inbox theme='outline' size='14' />
-                      <span>
-                        {isManualUnread ? t('conversation.history.markAsRead') : t('conversation.history.markAsUnread')}
-                      </span>
-                    </div>
-                  </Menu.Item>
-                  <Menu.Item key='rename'>
-                    <div className='flex items-center gap-8px'>
-                      <EditOne theme='outline' size='14' />
-                      <span>{t('conversation.history.rename')}</span>
-                    </div>
-                  </Menu.Item>
-                  <Menu.Item key='createCronTask'>
-                    <div className='flex items-center gap-8px'>
-                      <Timer theme='outline' size='14' />
-                      <span>{t('conversation.history.createCronTask')}</span>
-                    </div>
-                  </Menu.Item>
-                  <Menu.Item key='openDetached'>
-                    <div className='flex items-center gap-8px'>
-                      <Newlybuild theme='outline' size='14' />
-                      <span>{t('conversation.history.openInNewWindow')}</span>
-                    </div>
-                  </Menu.Item>
-                  {onExport && (
-                    <Menu.Item key='export'>
-                      <div className='flex items-center gap-8px'>
-                        <Export theme='outline' size='14' />
-                        <span>{t('conversation.history.export')}</span>
-                      </div>
-                    </Menu.Item>
-                  )}
-                  <Menu.Item key='archive'>
-                    <div className='flex items-center gap-8px'>
-                      <FolderClose theme='outline' size='14' />
-                      <span>{t('conversation.history.archive')}</span>
-                    </div>
-                  </Menu.Item>
-                </Menu>
-              }
+              droplist={<ConversationRowMenu {...props} />}
               trigger='click'
               position='br'
               popupVisible={menuVisible}

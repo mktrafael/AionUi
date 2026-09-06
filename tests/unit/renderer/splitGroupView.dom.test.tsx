@@ -36,7 +36,12 @@ const { layoutState, closePreviewIfScopeChanged, mountCounts, markAsRead } = vi.
 
 vi.mock('@/renderer/pages/cron', () => ({ useCronJobsMap: () => ({ markAsRead }) }));
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      typeof options?.name === 'string' ? `${key}:${options.name}:${String(options.count)}` : key,
+  }),
+}));
 vi.mock('@/renderer/hooks/context/LayoutContext', () => ({
   useLayoutContext: () => ({ isMobile: layoutState.isMobile, siderCollapsed: false, setSiderCollapsed: () => {} }),
 }));
@@ -107,6 +112,13 @@ describe('SplitGroupView focus wiring (desktop columns)', () => {
   it('draws a divider between every pair of adjacent columns, and none after the last', () => {
     render(<SplitGroupView group={trio} />);
     const dividers = screen.getAllByTestId(/^split-column-divider-/);
+    // A neutral hairline, with a neutral grab affordance under the pointer only.
+    for (const divider of dividers) {
+      const line = divider.querySelector('span') as HTMLElement;
+      expect(line.className).toContain('bg-[var(--border-base)]');
+      expect(line.className).not.toMatch(/aou-6|primary-6/);
+      expect(line.className).toContain('group-hover:');
+    }
     expect(dividers.map((divider) => divider.getAttribute('data-testid'))).toEqual([
       'split-column-divider-a',
       'split-column-divider-b',
@@ -277,5 +289,41 @@ describe('SplitGroupView on a narrow viewport (tabs)', () => {
     render(<SplitGroupView group={trio} />);
     expect(getMountedConversationIds()).toEqual(['a']);
     expect(getFocusedConversation()).toBe('a');
+  });
+});
+
+describe('SplitGroupView title', () => {
+  it('names the split by its size while it is unnamed', () => {
+    render(<SplitGroupView group={trio} />);
+    expect(screen.getByTestId('split-group-view-title-g1').textContent).toBe('conversation.splitGroup.blockLabel');
+  });
+
+  it('leaves the tab layout bounded: the title takes room from the pane, not from the viewport', () => {
+    layoutState.isMobile = true;
+    render(<SplitGroupView group={trio} />);
+    const view = screen.getByTestId('split-group-view-g1');
+    // A bounded flex column: the title and the tab strip hold their own height,
+    // and the pane below them takes what is left instead of overflowing. The
+    // title is a third shrink-0 sibling in a layout that already had two.
+    expect(view.className).toContain('flex-col');
+    expect(view.className).toContain('h-full');
+    expect(view.className).toContain('min-h-0');
+    expect(screen.getByTestId('split-group-view-title-g1').className).toContain('shrink-0');
+    const pane = screen.getByTestId('split-column-a').closest('div[class*="flex-1"]');
+    expect(pane).not.toBeNull();
+    expect(pane?.className).toContain('min-h-0');
+  });
+
+  it('shows the name and the size once the group is named, on both layouts', () => {
+    render(<SplitGroupView group={{ ...trio, name: 'Research' }} />);
+    expect(screen.getByTestId('split-group-view-title-g1').textContent).toBe(
+      'conversation.splitGroup.blockLabelNamed:Research:3'
+    );
+    cleanup();
+    layoutState.isMobile = true;
+    render(<SplitGroupView group={{ ...trio, name: 'Research' }} />);
+    expect(screen.getByTestId('split-group-view-title-g1').textContent).toBe(
+      'conversation.splitGroup.blockLabelNamed:Research:3'
+    );
   });
 });

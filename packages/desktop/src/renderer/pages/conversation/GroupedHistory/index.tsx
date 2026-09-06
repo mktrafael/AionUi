@@ -46,7 +46,7 @@ const WorkspaceGroupedHistory: React.FC<WorkspaceGroupedHistoryProps> = ({
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const { dropTarget } = useConversationDrag();
-  const { removeMember: removeSplitGroupMember } = useSplitGroupMutations();
+  const { removeMember: removeSplitGroupMember, renameGroup: renameSplitGroup } = useSplitGroupMutations();
   const { getJobStatus, markAsRead, setActiveConversation } = useCronJobsMap();
 
   const {
@@ -149,10 +149,14 @@ const WorkspaceGroupedHistory: React.FC<WorkspaceGroupedHistoryProps> = ({
     isManualUnread,
   });
 
-  // Rows are drag sources and drop targets only where a drop can mean
-  // something: not while batch-selecting, not in the collapsed rail, and not
-  // on touch, where the pointer is needed for scrolling.
-  const isDragEnabled = !batchMode && !collapsed && !isMobile;
+  // Rows are drag sources and drop targets wherever a drop can mean something,
+  // which is everywhere but batch selection. Width says nothing about it — the
+  // collapsed rail and a narrow window are layouts the handle has to fit into —
+  // and neither does the pointer: the drag provider's touch sensor waits for a
+  // hold before it drags, so a finger keeps its scroll and still gets to move
+  // rows. A member row can only fuse with a plain row that is a drop target,
+  // so the two kinds of row must agree on where dragging exists.
+  const isDragEnabled = !batchMode;
 
   // Fork-lineage badge support: resolve a parent conversation's display name
   // from the already-loaded sidebar list (no extra fetch; unresolved = the
@@ -302,6 +306,8 @@ const WorkspaceGroupedHistory: React.FC<WorkspaceGroupedHistoryProps> = ({
           getJobStatus={getJobStatus}
           onOpen={handleSplitGroupOpen}
           onRemoveMember={(target, member_id) => void removeSplitGroupMember(target.id, member_id)}
+          onRenameGroup={(target, name) => renameSplitGroup(target.id, name)}
+          getMemberRowProps={getConversationRowProps}
         />
       );
     }

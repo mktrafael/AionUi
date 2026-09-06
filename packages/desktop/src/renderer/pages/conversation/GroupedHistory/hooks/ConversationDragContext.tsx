@@ -24,16 +24,22 @@ import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import type { CollisionDetection, DragEndEvent, DragMoveEvent, DragStartEvent } from '@dnd-kit/core';
-import { DndContext, DragOverlay, PointerSensor, pointerWithin, useSensor, useSensors } from '@dnd-kit/core';
+import { DndContext, DragOverlay, MouseSensor, TouchSensor, pointerWithin, useSensor, useSensors } from '@dnd-kit/core';
 import { getEventCoordinates } from '@dnd-kit/utilities';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 
 import ConversationLeadingIcon from '../ConversationLeadingIcon';
-import type { ConversationDropTarget, DropIntent } from '../utils/conversationDropTargets';
-import { pickRowInGap, resolveConversationDropAction, resolveDropIntent } from '../utils/conversationDropTargets';
+import type { ConversationDropAction, ConversationDropTarget, DropIntent } from '../utils/conversationDropTargets';
+import {
+  dropActionHighlightsTarget,
+  pickRowInGap,
+  resolveConversationDropAction,
+  resolveDropIntent,
+} from '../utils/conversationDropTargets';
 import type { RowRect } from '../utils/conversationDropTargets';
-import { readSplitGroupTag } from '../utils/splitGroupHelpers';
+import { findSplitGroupOf, readSplitGroupTag } from '../utils/splitGroupHelpers';
 import { usePinnedReorder } from './useDragAndDrop';
 import { useSplitGroupMutations } from './useSplitGroupMutations';
 
@@ -43,26 +49,38 @@ export type ConversationDropTargetState = {
   intent: DropIntent;
 } | null;
 
+/**
+ * What releasing right now would do to a split-group member: shown on the
+ * ghost that follows the pointer, so leaving a group — which highlights no
+ * target of its own — is visible before the user lets go.
+ */
+export type ConversationDropHint = 'remove-member' | 'move-member' | null;
+
 export type ConversationDragValue = {
   /** The conversation being dragged, or null when nothing is. */
   activeConversation: TChatConversation | null;
   dropTarget: ConversationDropTargetState;
+  dropHint: ConversationDropHint;
 };
 
-const idleValue: ConversationDragValue = { activeConversation: null, dropTarget: null };
+const idleValue: ConversationDragValue = { activeConversation: null, dropTarget: null, dropHint: null };
 
 const ConversationDragContext = createContext<ConversationDragValue>(idleValue);
 
 /** Live drag state for highlights. Safe to call with no provider above (nothing is ever dragged). */
 export const useConversationDrag = (): ConversationDragValue => useContext(ConversationDragContext);
 
+/** Marks a collision that was picked for the pointer sitting in the gap beside its target. */
+export const GAP_COLLISION = 'gap';
+
 /**
  * The droppable under the pointer; failing that, the row-like target (a row
  * or a pill) the pointer is in the gap between, so a release between two
- * sidebar entries still reads as "between". Blank space is not a target:
- * releasing there does nothing.
+ * sidebar entries still reads as "between". A gap pick is marked as one on the
+ * collision, so the drop can be read as "beside" rather than "onto" whatever
+ * it is beside. Blank space is not a target: releasing there does nothing.
  */
-const collisionDetection: CollisionDetection = (args) => {
+export const collisionDetection: CollisionDetection = (args) => {
   const within = pointerWithin(args);
   if (within.length > 0) return within;
   const pointer = args.pointerCoordinates;
@@ -78,25 +96,41 @@ const collisionDetection: CollisionDetection = (args) => {
   const id = pickRowInGap(pointer, rows);
   if (id === null) return [];
   const container = args.droppableContainers.find((candidate) => String(candidate.id) === id);
-  return container ? [{ id: container.id, data: { droppableContainer: container, value: 0 } }] : [];
+  return container
+    ? [{ id: container.id, data: { droppableContainer: container, value: 0, [GAP_COLLISION]: true } }]
+    : [];
 };
 
-const ConversationDragGhost: React.FC<{ conversation: TChatConversation }> = ({ conversation }) => (
-  <div className='flex items-center gap-8px h-34px ps-10px pe-14px rd-8px bg-2 shadow-lg border border-solid border-b-base max-w-260px cursor-grabbing'>
-    <span className='size-22px flex items-center justify-center shrink-0'>
-      <ConversationLeadingIcon conversation={conversation} />
-    </span>
-    <span className='text-14px font-[500] text-t-primary truncate'>{conversation.name}</span>
+const ConversationDragGhost: React.FC<{ conversation: TChatConversation; hint?: string }> = ({
+  conversation,
+  hint,
+}) => (
+  <div className='flex flex-col gap-2px ps-10px pe-14px py-4px rd-8px bg-2 shadow-lg border border-solid border-b-base max-w-260px cursor-grabbing'>
+    <div className='flex items-center gap-8px h-24px'>
+      <span className='size-22px flex items-center justify-center shrink-0'>
+        <ConversationLeadingIcon conversation={conversation} />
+      </span>
+      <span className='text-14px font-[500] text-t-primary truncate'>{conversation.name}</span>
+    </div>
+    {hint && (
+      <span
+        className='ps-30px text-11px lh-14px text-[rgb(var(--primary-6))] truncate'
+        data-testid='conversation-drag-hint'
+      >
+        {hint}
+      </span>
+    )}
   </div>
 );
 
 export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const { t } = useTranslation();
   const {
     conversations,
     groupedHistory: { pinnedConversations, splitGroups },
   } = useConversationHistoryContext();
   const { reorderPinned } = usePinnedReorder();
-  const { createGroup, addMember, reconcileDeleted } = useSplitGroupMutations();
+  const { createGroup, addMember, moveMember, removeMember, reconcileDeleted } = useSplitGroupMutations();
 
   // A member deleted anywhere (its own row menu, the archive page, another
   // device) reaches every window as a backend "deleted" event. Reconcile its
@@ -130,32 +164,73 @@ export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ ch
   }, []);
   const [activeConversation, setActiveConversation] = useState<TChatConversation | null>(null);
   const [dropTarget, setDropTarget] = useState<ConversationDropTargetState>(null);
+  const [dropHint, setDropHint] = useState<ConversationDropHint>(null);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  // Two sensors, because a mouse and a finger need opposite rules. A mouse
+  // drags once it has moved 8px, so a click stays a click. A finger has to
+  // hold still for a moment first: the list scrolls by touch, and a swipe that
+  // started on a handle must scroll, not drag. Movement during the hold cancels
+  // the drag and lets the scroll through. This is what keeps drag available on
+  // every device without hijacking the one gesture a touch screen needs most.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } })
+  );
   const pinnedIds = useMemo(() => pinnedConversations.map((conversation) => conversation.id), [pinnedConversations]);
 
   const resolveOver = useCallback(
     (
       event: DragMoveEvent | DragEndEvent
-    ): { id: string; target: ConversationDropTarget; intent: DropIntent } | null => {
+    ): { id: string; target: ConversationDropTarget; intent: DropIntent; inGap: boolean } | null => {
       const { over, active } = event;
       const target = over?.data.current as ConversationDropTarget | undefined;
       if (!over || !target?.kind) return null;
 
+      // Whether collision detection settled on this target for the pointer
+      // being in the gap beside it, rather than over it. A gap is "between"
+      // whatever it is beside — a plain row, a pill, a row inside one — so the
+      // intent is decided before the target's kind is looked at.
+      const inGap =
+        event.collisions?.some((collision) => collision.id === over.id && collision.data?.[GAP_COLLISION] === true) ??
+        false;
       let intent: DropIntent = 'onto';
-      if (target.kind === 'conversation' && target.surface === 'row') {
+      if (inGap || (target.kind === 'conversation' && target.surface === 'row')) {
         const origin = getEventCoordinates(event.activatorEvent);
         const pointerY = (origin?.y ?? over.rect.top) + event.delta.y;
+        // A row has "between" bands at its top and bottom when a release there
+        // can mean between: two pinned rows reordering, or a group member —
+        // whose drag can end between any two rows — leaving. The 2px gap alone
+        // is too narrow to be the only way out of a group.
+        const activeIsMember = findSplitGroupOf(splitGroups, String(active.id)) !== undefined;
         intent = resolveDropIntent({
           pointerY,
           targetTop: over.rect.top,
           targetHeight: over.rect.height,
-          canReorder: pinnedIds.includes(String(active.id)) && pinnedIds.includes(target.conversation_id),
+          canReorder:
+            activeIsMember ||
+            (target.kind === 'conversation' &&
+              pinnedIds.includes(String(active.id)) &&
+              pinnedIds.includes(target.conversation_id)),
+          inGap,
         });
       }
-      return { id: String(over.id), target, intent };
+      return { id: String(over.id), target, intent, inGap };
     },
-    [pinnedIds]
+    [pinnedIds, splitGroups]
+  );
+
+  /** What releasing where the pointer is would do. `null` target means "over nothing". */
+  const resolveAction = useCallback(
+    (event: DragMoveEvent | DragEndEvent, resolved: ReturnType<typeof resolveOver>): ConversationDropAction =>
+      resolveConversationDropAction({
+        dragged_id: String(event.active.id),
+        target: resolved?.target ?? null,
+        intent: resolved?.intent ?? 'onto',
+        inGap: resolved?.inGap ?? false,
+        groups: splitGroups,
+        pinnedIds,
+      }),
+    [pinnedIds, splitGroups]
   );
 
   const handleDragStart = useCallback(
@@ -163,6 +238,7 @@ export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ ch
       const id = String(event.active.id);
       setActiveConversation(conversations.find((conversation) => conversation.id === id) ?? null);
       setDropTarget(null);
+      setDropHint(null);
     },
     [conversations]
   );
@@ -170,37 +246,38 @@ export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ ch
   const handleDragMove = useCallback(
     (event: DragMoveEvent) => {
       const resolved = resolveOver(event);
+      const action = resolveAction(event, resolved);
+      // A target lights up only when releasing would use it. A member leaving
+      // its group beside a row or a block must not make that row or block say
+      // "drop here" while the ghost says "take it out".
+      const highlighted = resolved && dropActionHighlightsTarget(action) ? resolved : null;
       setDropTarget((previous) => {
-        if (!resolved) return previous === null ? previous : null;
-        if (previous && previous.id === resolved.id && previous.intent === resolved.intent) return previous;
-        return { id: resolved.id, intent: resolved.intent };
+        if (!highlighted) return previous === null ? previous : null;
+        if (previous && previous.id === highlighted.id && previous.intent === highlighted.intent) return previous;
+        return { id: highlighted.id, intent: highlighted.intent };
       });
+      const hint: ConversationDropHint =
+        action.type === 'remove-member' || action.type === 'move-member' ? action.type : null;
+      setDropHint((previous) => (previous === hint ? previous : hint));
     },
-    [resolveOver]
+    [resolveAction, resolveOver]
   );
 
   const reset = useCallback(() => {
     setActiveConversation(null);
     setDropTarget(null);
+    setDropHint(null);
   }, []);
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       reset();
       const resolved = resolveOver(event);
-      if (!resolved) return;
-
       const dragged_id = String(event.active.id);
-      const action = resolveConversationDropAction({
-        dragged_id,
-        target: resolved.target,
-        intent: resolved.intent,
-        groups: splitGroups,
-        pinnedIds,
-      });
+      const action = resolveAction(event, resolved);
       // A drop on the open chat area is the user asking to see the columns;
       // a drop in the sidebar only builds the pill and leaves the view alone.
-      const open = resolved.target.kind === 'conversation' && resolved.target.surface === 'chat';
+      const open = resolved?.target.kind === 'conversation' && resolved.target.surface === 'chat';
 
       switch (action.type) {
         case 'reorder-pinned':
@@ -212,18 +289,24 @@ export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ ch
         case 'add-member':
           void addMember(action.group_id, action.dragged_id, { open });
           return;
+        case 'remove-member':
+          void removeMember(action.group_id, action.dragged_id);
+          return;
+        case 'move-member':
+          void moveMember(action.from_group_id, action.dragged_id, action.to, { open });
+          return;
         case 'none':
-          if (action.reason !== 'self' && action.reason !== 'between') {
+          if (action.reason !== 'self' && action.reason !== 'between' && action.reason !== 'nowhere') {
             console.warn(`[SplitGroup] Ignored a drop of ${dragged_id}: ${action.reason}.`);
           }
       }
     },
-    [addMember, createGroup, pinnedIds, reorderPinned, reset, resolveOver, splitGroups]
+    [addMember, createGroup, moveMember, removeMember, reorderPinned, reset, resolveAction, resolveOver]
   );
 
   const value = useMemo<ConversationDragValue>(
-    () => ({ activeConversation, dropTarget }),
-    [activeConversation, dropTarget]
+    () => ({ activeConversation, dropTarget, dropHint }),
+    [activeConversation, dropHint, dropTarget]
   );
 
   return (
@@ -240,7 +323,18 @@ export const ConversationDragProvider: React.FC<React.PropsWithChildren> = ({ ch
         {typeof document !== 'undefined' &&
           createPortal(
             <DragOverlay dropAnimation={null} zIndex={1000}>
-              {activeConversation && <ConversationDragGhost conversation={activeConversation} />}
+              {activeConversation && (
+                <ConversationDragGhost
+                  conversation={activeConversation}
+                  hint={
+                    dropHint === 'remove-member'
+                      ? t('conversation.splitGroup.dropToRemove')
+                      : dropHint === 'move-member'
+                        ? t('conversation.splitGroup.dropToMove')
+                        : undefined
+                  }
+                />
+              )}
             </DragOverlay>,
             document.body
           )}

@@ -132,6 +132,13 @@ export interface PreviewContextValue {
   activeTab: PreviewTab | null;
 
   // 预览面板操作 / Preview panel operations
+  /**
+   * Bumped by every deliberate close — the panel's own control, or leaving
+   * every workspace route — and never by a scope swap, which only restores
+   * another scope's stored state. Layout keeps the split-route preview region
+   * mounted across scope swaps and needs to tell the two apart.
+   */
+  deliberateCloseCount: number;
   openPreview: (
     content: string,
     type: PreviewContentType,
@@ -578,6 +585,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // State starts empty; the active scope's persisted state is loaded on the first
   // `closePreviewIfScopeChanged` (per-project restore, see switchScope below).
   const [isOpen, setIsOpen] = useState(false);
+  const [deliberateCloseCount, setDeliberateCloseCount] = useState(0);
   const [isMaximized, setIsMaximized] = useState(false);
   const [tabs, setTabs] = useState<PreviewTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -955,6 +963,8 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const closePreview = useCallback(() => {
     setIsMaximized(false);
     setIsOpen(false);
+    // A real close, as opposed to the scope swap in closePreviewIfScopeChanged.
+    setDeliberateCloseCount((count) => count + 1);
     // DOM snippets are per-session scratch state tied to the visible HTML inspector,
     // not tab content, so they are cleared with the view.
     setDomSnippets([]);
@@ -972,6 +982,8 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const clearPreviewForScope = useCallback(() => {
     setIsMaximized(false);
     setIsOpen(false);
+    // "I am done with these files" is as deliberate as a close gets.
+    setDeliberateCloseCount((count) => count + 1);
     setTabs([]);
     setActiveTabId(null);
     setDomSnippets([]);
@@ -1033,6 +1045,9 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
             // 没有 tab 了，关闭预览面板 / No more tabs, close preview panel
             setIsOpen(false);
             setActiveTabId(null);
+            // Closing the last tab is the user dismissing the panel, so it
+            // counts as a deliberate close and releases the split-route hold.
+            setDeliberateCloseCount((count) => count + 1);
           }
         }
 
@@ -1529,6 +1544,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
       activeTabId,
       activeTab,
       openPreview,
+      deliberateCloseCount,
       closePreview,
       toggleMaximized,
       clearPreviewForScope,
@@ -1560,6 +1576,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     activeTabId,
     activeTab,
     openPreview,
+    deliberateCloseCount,
     closePreview,
     toggleMaximized,
     clearPreviewForScope,
